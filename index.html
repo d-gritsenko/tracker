@@ -498,4 +498,48 @@
                   type="text"
                   placeholder="Название предмета"
                   value={classForm.title}
-                  onChange={e => setClassForm({ ...classForm,
+                  onChange={e => setClassForm({ ...classForm, title: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
+                  required
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    placeholder="Аудитория (напр. 801 КПМ)"
+                    value={classForm.room}
+                    onChange={e => setClassForm({ ...classForm, room: e.target.value })}
+                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
+                  />
+                  <select
+                    value={classForm.type}
+                    onChange={e => setClassForm({ ...classForm, type: e.target.value })}
+                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
+                  >
+                    <option value="lecture">Лекция</option>
+                    <option value="seminar">Семинар</option>
+                    <option value="lab">Практикум / Лаб</option>
+                    <option value="sport">Спорт</option>
+                  </select>
+                </div>
+                <input
+                  type="text"
+                  placeholder="Преподаватель"
+                  value={classForm.teacher}
+                  onChange={e => setClassForm({ ...classForm, teacher: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
+                />
+                <div className="flex justify-end gap-2 pt-2">
+                  <button type="button" onClick={() => setShowClassModal(false)} className="px-4 py-2 text-xs text-slate-400">Отмена</button>
+                  <button type="submit" className="px-4 py-2 text-xs bg-indigo-600 text-white rounded-xl font-medium">Сохранить</button>
+                </div>
+              </form>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
