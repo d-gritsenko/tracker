@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>StudyPulse — Расписание и цели</title>
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen selection:bg-indigo-500 selection:text-white">
+  <div id="root"></div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+    import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+    import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+    const FIREBASE_CONFIG = {
+      apiKey: "AIzaSyCkz2bAI9lEbpzMdF9A00JkHDtygqa21pA",
+      authDomain: "study-tracker-97e26.firebaseapp.com",
+      projectId: "study-tracker-97e26",
+      storageBucket: "study-tracker-97e26.firebasestorage.app",
+      messagingSenderId: "514873300301",
+      appId: "1:514873300301:web:dca25253f507296a63d304",
+      measurementId: "G-EJF9BCYVV0"
+    };
+
+    const app = initializeApp(FIREBASE_CONFIG);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const provider = new GoogleAuthProvider();
+
+    window.firebaseServices = {
+      isConfigured: true, auth, db, provider,
+      signInWithPopup, signOut, onAuthStateChanged, doc, getDoc, setDoc
+    };
+    window.dispatchEvent(new Event("firebase-ready"));
+  </script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    const DAYS = [
+      { id: "mon", short: "Пн", name: "Понедельник", offset: 0 },
+      { id: "tue", short: "Вт", name: "Вторник", offset: 1 },
+      { id: "wed", short: "Ср", name: "Среда", offset: 2 },
+      { id: "thu", short: "Чт", name: "Четверг", offset: 3 },
+      { id: "fri", short: "Пт", name: "Пятница", offset: 4 },
+      { id: "sat", short: "Сб", name: "Суббота", offset: 5 },
+      { id: "sun", short: "Вс", name: "Воскресенье", offset: 6 }
+    ];
+
+    const TIME_SLOTS = [
+      "09:00 - 10:25", "10:35 - 12:00", "12:10 - 13:35",
+      "13:55 - 15:20", "15:30 - 16:55", "17:05 - 18:30", "18:40 - 20:05"
+    ];
+
+    const EMPTY_TEMPLATE = {
+      profileTitle: "Моё расписание",
+      classes: { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] },
+      goals: { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] }
+    };
+
+    const TYPE_BADGES = {
+      lecture: { label: "Лекция", cls: "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/40" },
+      seminar: { label: "Семинар", cls: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" },
+      lab:     { label: "Практикум / Лаб", cls: "bg-amber-500/20 text-amber-300 border-amber-500/40" },
+      sport:   { label: "Спорт", cls: "bg-sky-500/20 text-sky-300 border-sky-500/40" }
+    };
+
+    function getMonday(weekOffset = 0) {
+      const now = new Date();
+      const day = now.getDay();
+      const diff = now.getDate() - day + (day === 0 ? -6 : 1) + weekOffset * 7;
+      const monday = new Date(now.setDate(diff));
+      monday.setHours(0, 0, 0, 0);
+      return monday;
+    }
+
+    function App() {
+      const [user, setUser] = useState(null);
+      const [syncState, setSyncState] = useState("local");
+      const [data, setData] = useState(() => {
+        const saved = localStorage.getItem("studypulse_guest_v1");
+        return saved ? JSON.parse(saved) : EMPTY_TEMPLATE;
+      });
+
+      const [weekOffset, setWeekOffset] = useState(0);
+      const [activeDay, setActiveDay] = useState(() => {
+        const d = new Date().getDay();
+        return DAYS[d === 0 ? 6 : d - 1].id;
+      });
+
+      const [newGoalText, setNewGoalText] = useState("");
+      const [newGoalPriority, setNewGoalPriority] = useState("high");
+      const [showClassModal, setShowClassModal] = useState(false);
+      const [classForm, setClassForm] = useState({
+        time: TIME_SLOTS[0], title: "", room: "", teacher: "", type: "lecture"
+      });
+      const fileInputRef = useRef(null);
+
+      useEffect(() => {
+        const initAuth = () => {
+          const fb = window.firebaseServices;
+          if (!fb || !fb.isConfigured) return;
+          fb.onAuthStateChanged(fb.auth, async (currentUser) => {
+            setUser(currentUser);
+            if (currentUser) {
+              setSyncState("syncing");
+              try {
+                const ref = fb.doc(fb.db, "users", currentUser.uid);
+                const snap = await fb.getDoc(ref);
+                if (snap.exists()) {
+                  setData(snap.data());
+                } else {
+                  await fb.setDoc(ref, data);
+                }
+                setSyncState("synced");
+              } catch (e) {
+                console.error(e);
+                setSyncState("error");
+              }
+            } else {
+              setSyncState("local");
+            }
+          });
+        };
+
+        if (window.firebaseServices) initAuth();
+        else window.addEventListener("firebase-ready", initAuth);
+      }, []);
+
+      const persistData = async (nextData) => {
+        setData(nextData);
+        localStorage.setItem("studypulse_guest_v1", JSON.stringify(nextData));
+        const fb = window.firebaseServices;
+        if (user && fb && fb.isConfigured) {
+          setSyncState("syncing");
+          try {
+            await fb.setDoc(fb.doc(fb.db, "users", user.uid), nextData);
+            setSyncState("synced");
+          } catch (e) {
+            console.error(e);
+            setSyncState("error");
+          }
+        }
+      };
+
+      const handleGoogleLogin = async () => {
+        const fb = window.firebaseServices;
+        await fb.signInWithPopup(fb.auth, fb.provider);
+      };
+
+      const handleLogout = async () => {
+        const fb = window.firebaseServices;
+        if (fb?.isConfigured) await fb.signOut(fb.auth);
+      };
+
+      const monday = useMemo(() => getMonday(weekOffset), [weekOffset]);
+      const daysWithDates = useMemo(() => {
+        const todayStr = new Date().toDateString();
+        return DAYS.map(d => {
+          const dateObj = new Date(monday);
+          dateObj.setDate(monday.getDate() + d.offset);
+          const dateLabel = dateObj.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+          return { ...d, dateLabel, isToday: dateObj.toDateString() === todayStr };
+        });
+      }, [monday]);
+
+      const stats = useMemo(() => {
+        let streak = 0;
+        const perDay = DAYS.map(d => {
+          const cls = data.classes[d.id] || [];
+          const gls = data.goals[d.id] || [];
+          const doneCls = cls.filter(c => c.attended).length;
+          const doneGls = gls.filter(g => g.done).length;
+          const total = cls.length + gls.length;
+          const score = total > 0 ? Math.round(((doneCls + doneGls) / total) * 100) : 0;
+          if (score >= 60) streak++;
+          return { ...d, score, clsCount: cls.length, doneCls, glsCount: gls.length, doneGls };
+        });
+        return { streak, perDay };
+      }, [data]);
+
+      const toggleClassAttended = (id) => {
+        const list = (data.classes[activeDay] || []).map(c =>
+          c.id === id ? { ...c, attended: !c.attended } : c
+        );
+        persistData({ ...data, classes: { ...data.classes, [activeDay]: list } });
+      };
+
+      const deleteClass = (id) => {
+        const list = (data.classes[activeDay] || []).filter(c => c.id !== id);
+        persistData({ ...data, classes: { ...data.classes, [activeDay]: list } });
+      };
+
+      const addClass = (e) => {
+        e.preventDefault();
+        if (!classForm.title.trim()) return;
+        const nextItem = { id: "c_" + Date.now(), ...classForm, attended: false };
+        const list = [...(data.classes[activeDay] || []), nextItem];
+        persistData({ ...data, classes: { ...data.classes, [activeDay]: list } });
+        setShowClassModal(false);
+        setClassForm({ time: TIME_SLOTS[0], title: "", room: "", teacher: "", type: "lecture" });
+      };
+
+      const addGoal = (e) => {
+        e.preventDefault();
+        if (!newGoalText.trim()) return;
+        const nextGoal = { id: "g_" + Date.now(), text: newGoalText.trim(), priority: newGoalPriority, done: false };
+        const list = [...(data.goals[activeDay] || []), nextGoal];
+        persistData({ ...data, goals: { ...data.goals, [activeDay]: list } });
+        setNewGoalText("");
+      };
+
+      const toggleGoal = (id) => {
+        const list = (data.goals[activeDay] || []).map(g =>
+          g.id === id ? { ...g, done: !g.done } : g
+        );
+        persistData({ ...data, goals: { ...data.goals, [activeDay]: list } });
+      };
+
+      const deleteGoal = (id) => {
+        const list = (data.goals[activeDay] || []).filter(g => g.id !== id);
+        persistData({ ...data, goals: { ...data.goals, [activeDay]: list } });
+      };
+
+      const exportJSON = () => {
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `schedule-backup.json`;
+        a.click();
+      };
+
+      const importJSON = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const parsed = JSON.parse(ev.target.result);
+            if (parsed.classes && parsed.goals) {
+              persistData(parsed);
+            } else {
+              alert("Некорректный формат файла расписания");
+            }
+          } catch {
+            alert("Ошибка чтения JSON-файла");
+          }
+        };
+        reader.readAsText(file);
+      };
+
+      const activeDayObj = daysWithDates.find(d => d.id === activeDay);
+      const dayClasses = data.classes[activeDay] || [];
+      const dayGoals = data.goals[activeDay] || [];
+
+      return (
+        <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
+          <header className="flex flex-wrap items-center justify-between gap-4 bg-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-lg">
+            <div>
+              <div className="flex items-center gap-2.5">
+                <span className="text-xl font-bold tracking-tight text-white">{data.profileTitle || "Моё расписание"}</span>
+                <span className="text-xs px-2.5 py-1 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-medium">
+                  🔥 Стрик: {stats.streak} дн.
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">
+                {syncState === "synced" && "☁️ Синхронизировано с твоим Google-аккаунтом"}
+                {syncState === "syncing" && "⏳ Сохранение в облако..."}
+                {syncState === "local" && "💾 Гостевой режим (хранится только в этом браузере)"}
+                {syncState === "error" && "⚠️ Ошибка синхронизации с Firestore"}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button onClick={() => fileInputRef.current?.click()} className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition">
+                📥 Импорт JSON
+              </button>
+              <input ref={fileInputRef} type="file" accept=".json" onChange={importJSON} className="hidden" />
+              <button onClick={exportJSON} className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition">
+                📤 Экспорт
+              </button>
+
+              {user ? (
+                <div className="flex items-center gap-2 pl-2 border-l border-slate-800">
+                  <span className="text-xs text-slate-300 hidden sm:inline">{user.displayName || user.email}</span>
+                  <button onClick={handleLogout} className="px-3 py-1.5 text-xs bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 rounded-xl border border-rose-500/30">
+                    Выйти
+                  </button>
+                </div>
+              ) : (
+                <button onClick={handleGoogleLogin} className="px-3.5 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow transition">
+                  Войти через Google
+                </button>
+              )}
+            </div>
+          </header>
+
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <button onClick={() => setWeekOffset(w => w - 1)} className="px-2.5 py-1 bg-slate-900 border border-slate-800 rounded-lg text-sm hover:bg-slate-800">←</button>
+                <button onClick={() => setWeekOffset(0)} className="px-3 py-1 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-300 hover:bg-slate-800">
+                  Текущая неделя
+                </button>
+                <button onClick={() => setWeekOffset(w => w + 1)} className="px-2.5 py-1 bg-slate-900 border border-slate-800 rounded-lg text-sm hover:bg-slate-800">→</button>
+              </div>
+              <span className="text-xs text-slate-400">
+                {daysWithDates[0].dateLabel} — {daysWithDates[6].dateLabel}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-7 gap-2">
+              {daysWithDates.map((d, idx) => {
+                const dayStat = stats.perDay[idx];
+                const isSelected = d.id === activeDay;
+                return (
+                  <button
+                    key={d.id}
+                    onClick={() => setActiveDay(d.id)}
+                    className={`p-2.5 rounded-2xl border text-left transition flex flex-col justify-between ${
+                      isSelected
+                        ? "bg-indigo-600/20 border-indigo-500 text-white shadow-md"
+                        : "bg-slate-900/70 border-slate-800/90 text-slate-300 hover:bg-slate-900"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between w-full">
+                      <span className="font-bold text-sm">{d.short}</span>
+                      {d.isToday && <span className="w-2 h-2 rounded-full bg-emerald-400" title="Сегодня"></span>}
+                    </div>
+                    <span className="text-[11px] text-slate-400 mt-0.5">{d.dateLabel}</span>
+                    <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden mt-2">
+                      <div className="bg-indigo-500 h-full transition-all" style={{ width: `${dayStat.score}%` }} />
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-7 bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-bold text-white">
+                    {activeDayObj?.name}, {activeDayObj?.dateLabel}
+                  </h2>
+                  <p className="text-xs text-slate-400">Пар по расписанию: {dayClasses.length}</p>
+                </div>
+                <button
+                  onClick={() => setShowClassModal(true)}
+                  className="px-3 py-1.5 text-xs font-medium bg-indigo-600/20 text-indigo-300 border border-indigo-500/30 rounded-xl hover:bg-indigo-600/30"
+                >
+                  + Добавить пару
+                </button>
+              </div>
+
+              {dayClasses.length === 0 ? (
+                <div className="text-center py-10 border border-dashed border-slate-800 rounded-xl text-slate-400 text-sm">
+                  В этот день аудиторных пар нет — время для бота или отдыха.
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {dayClasses.map(item => {
+                    const badge = TYPE_BADGES[item.type] || TYPE_BADGES.lecture;
+                    return (
+                      <div
+                        key={item.id}
+                        className={`p-3.5 rounded-xl border transition flex items-start justify-between gap-3 ${
+                          item.attended ? "bg-slate-900/40 border-slate-800/60 opacity-65" : "bg-slate-950/60 border-slate-800"
+                        }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            checked={!!item.attended}
+                            onChange={() => toggleClassAttended(item.id)}
+                            className="mt-1 w-4 h-4 accent-indigo-500 rounded cursor-pointer"
+                          />
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-xs font-mono text-indigo-400">{item.time}</span>
+                              <span className={`text-[11px] px-2 py-0.5 rounded-md border ${badge.cls}`}>{badge.label}</span>
+                              {item.room && <span className="text-xs text-slate-400">📍 {item.room}</span>}
+                            </div>
+                            <div className={`font-semibold text-sm mt-1 ${item.attended ? "line-through text-slate-400" : "text-slate-100"}`}>
+                              {item.title}
+                            </div>
+                            {item.teacher && <div className="text-xs text-slate-400 mt-0.5">👤 {item.teacher}</div>}
+                          </div>
+                        </div>
+                        <button onClick={() => deleteClass(item.id)} className="text-slate-500 hover:text-rose-400 text-xs px-1">✕</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="lg:col-span-5 bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-4">
+              <div>
+                <h2 className="text-lg font-bold text-white">Цели на день</h2>
+                <p className="text-xs text-slate-400">
+                  Выполнено: {dayGoals.filter(g => g.done).length} из {dayGoals.length}
+                </p>
+              </div>
+
+              <form onSubmit={addGoal} className="flex gap-2">
+                <input
+                  type="text"
+                  value={newGoalText}
+                  onChange={e => setNewGoalText(e.target.value)}
+                  placeholder="Добавить задачу..."
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+                />
+                <select
+                  value={newGoalPriority}
+                  onChange={e => setNewGoalPriority(e.target.value)}
+                  className="bg-slate-950 border border-slate-800 rounded-xl px-2.5 text-xs text-slate-300"
+                >
+                  <option value="high">🔥</option>
+                  <option value="med">⚡</option>
+                  <option value="low">🌱</option>
+                </select>
+                <button type="submit" className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-medium">
+                  +
+                </button>
+              </form>
+
+              <div className="space-y-2">
+                {dayGoals.length === 0 ? (
+                  <p className="text-xs text-slate-500 text-center py-6">Список задач на этот день пока пуст.</p>
+                ) : (
+                  dayGoals.map(g => (
+                    <div key={g.id} className="flex items-center justify-between gap-2 p-3 rounded-xl bg-slate-950/60 border border-slate-800">
+                      <label className="flex items-center gap-2.5 cursor-pointer flex-1">
+                        <input
+                          type="checkbox"
+                          checked={!!g.done}
+                          onChange={() => toggleGoal(g.id)}
+                          className="w-4 h-4 accent-emerald-500 rounded"
+                        />
+                        <span className="text-xs">
+                          {g.priority === "high" ? "🔥" : g.priority === "med" ? "⚡" : "🌱"}
+                        </span>
+                        <span className={`text-sm ${g.done ? "line-through text-slate-500" : "text-slate-200"}`}>
+                          {g.text}
+                        </span>
+                      </label>
+                      <button onClick={() => deleteGoal(g.id)} className="text-slate-500 hover:text-rose-400 text-xs">✕</button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          <section className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5">
+            <h3 className="text-sm font-bold text-slate-200 mb-4">График продуктивности за неделю</h3>
+            <div className="grid grid-cols-7 gap-3 items-end h-36 pt-4 px-2">
+              {stats.perDay.map((d, idx) => (
+                <div key={d.id} className="flex flex-col items-center h-full justify-end gap-1.5">
+                  <span className="text-[11px] font-mono text-slate-400">{d.score}%</span>
+                  <div className="w-full max-w-[42px] bg-slate-800/80 rounded-t-lg h-24 flex items-end overflow-hidden">
+                    <div
+                      className={`w-full transition-all rounded-t-lg ${
+                        d.score >= 60 ? "bg-gradient-to-t from-indigo-600 to-emerald-400" : "bg-indigo-500/60"
+                      }`}
+                      style={{ height: `${Math.max(d.score, 6)}%` }}
+                    />
+                  </div>
+                  <span className="text-xs font-medium text-slate-300">{daysWithDates[idx].short}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {showClassModal && (
+            <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
+              <form onSubmit={addClass} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 w-full max-w-md space-y-3">
+                <h3 className="font-bold text-white">Добавить занятие</h3>
+                <select
+                  value={classForm.time}
+                  onChange={e => setClassForm({ ...classForm, time: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
+                >
+                  {TIME_SLOTS.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <input
+                  type="text"
+                  placeholder="Название предмета"
+                  value={classForm.title}
+                  onChange={e => setClassForm({ ...classForm, title: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
+                  required
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    placeholder="Аудитория (напр. 801 КПМ)"
+                    value={classForm.room}
+                    onChange={e => setClassForm({ ...classForm, room: e.target.value })}
+                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
+                  />
+                  <select
+                    value={classForm.type}
+                    onChange={e => setClassForm({ ...classForm, type: e.target.value })}
+                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
+                  >
+                    <option value="lecture">Лекция</option>
+                    <option value="seminar">Семинар</option>
+                    <option value="lab">Практикум / Лаб</option>
+                    <option value="sport">Спорт</option>
+                  </select>
+                </div>
+                <input
+                  type="text"
+                  placeholder="Преподаватель"
+                  value={classForm.teacher}
+                  onChange={e => setClassForm({ ...classForm, teacher: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
+                />
+                <div className="flex justify-end gap-2 pt-2">
+                  <button type="button" onClick={() => setShowClassModal(false)} className="px-4 py-2 text-xs text-slate-400">Отмена</button>
+                  <button type="submit" className="px-4 py-2 text-xs bg-indigo-600 text-white rounded-xl font-medium">Сохранить</button>
+                </div>
+              </form>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
+
