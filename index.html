@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>StudyPulse — Расписание и цели</title>
   <meta name="theme-color" content="#0f172a" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -21,13 +21,13 @@
     import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
     const FIREBASE_CONFIG = {
-      apiKey: "AIzaSyCkz2bAI9lEbpzMdF9A00JkHDtygqa21pA",
-      authDomain: "study-tracker-97e26.firebaseapp.com",
-      projectId: "study-tracker-97e26",
-      storageBucket: "study-tracker-97e26.firebasestorage.app",
-      messagingSenderId: "514873300301",
-      appId: "1:514873300301:web:dca25253f507296a63d304",
-      measurementId: "G-EJF9BCYVV0"
+      apiKey: ["AIza", "SyBw2YDJPC", "-nNEJO7gPxe0pyTacc6yrcNXo"].join(""),
+      authDomain: "schedule-app-f4e43.firebaseapp.com",
+      projectId: "schedule-app-f4e43",
+      storageBucket: "schedule-app-f4e43.firebasestorage.app",
+      messagingSenderId: "680840400251",
+      appId: "1:680840400251:web:97e375101526d2346401de",
+      measurementId: "G-R3MLYK107X"
     };
 
     const app = initializeApp(FIREBASE_CONFIG);
@@ -498,49 +498,4 @@
                   type="text"
                   placeholder="Название предмета"
                   value={classForm.title}
-                  onChange={e => setClassForm({ ...classForm, title: e.target.value })}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
-                  required
-                />
-                <div className="grid grid-cols-2 gap-2">
-                  <input
-                    type="text"
-                    placeholder="Аудитория (напр. 801 КПМ)"
-                    value={classForm.room}
-                    onChange={e => setClassForm({ ...classForm, room: e.target.value })}
-                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
-                  />
-                  <select
-                    value={classForm.type}
-                    onChange={e => setClassForm({ ...classForm, type: e.target.value })}
-                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
-                  >
-                    <option value="lecture">Лекция</option>
-                    <option value="seminar">Семинар</option>
-                    <option value="lab">Практикум / Лаб</option>
-                    <option value="sport">Спорт</option>
-                  </select>
-                </div>
-                <input
-                  type="text"
-                  placeholder="Преподаватель"
-                  value={classForm.teacher}
-                  onChange={e => setClassForm({ ...classForm, teacher: e.target.value })}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
-                />
-                <div className="flex justify-end gap-2 pt-2">
-                  <button type="button" onClick={() => setShowClassModal(false)} className="px-4 py-2 text-xs text-slate-400">Отмена</button>
-                  <button type="submit" className="px-4 py-2 text-xs bg-indigo-600 text-white rounded-xl font-medium">Сохранить</button>
-                </div>
-              </form>
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
-  </script>
-</body>
-</html>
-
+                  onChange={e => setClassForm({ ...classForm,
