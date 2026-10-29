@@ -45,6 +45,8 @@
   <script type="text/babel">
     const { useState, useEffect, useMemo, useRef } = React;
 
+    const STORAGE_KEY = "studypulse_v3_date_bound";
+
     const DAYS = [
       { id: "mon", short: "Пн", name: "Понедельник", offset: 0 },
       { id: "tue", short: "Вт", name: "Вторник", offset: 1 },
@@ -60,13 +62,11 @@
       "13:55 - 15:20", "15:30 - 16:55", "17:05 - 18:30", "18:40 - 20:05"
     ];
 
-    const EMPTY_DAYS = { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] };
-
     const EMPTY_TEMPLATE = {
       profileTitle: "Моё расписание",
-      classes: EMPTY_DAYS,
-      goalsByWeek: {},
-      attendanceByWeek: {}
+      baseTemplate: { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] },
+      daysData: {},
+      updatedAt: 0
     };
 
     const TYPE_BADGES = {
@@ -85,51 +85,77 @@
       return monday;
     }
 
-    function formatWeekKey(mondayDate) {
-      const y = mondayDate.getFullYear();
-      const m = String(mondayDate.getMonth() + 1).padStart(2, "0");
-      const d = String(mondayDate.getDate()).padStart(2, "0");
+    function formatDateKey(dateObj) {
+      const y = dateObj.getFullYear();
+      const m = String(dateObj.getMonth() + 1).padStart(2, "0");
+      const d = String(dateObj.getDate()).padStart(2, "0");
       return `${y}-${m}-${d}`;
     }
 
-    function normalizeData(raw, currentWeekKey) {
+    function cloneBaseClasses(list = []) {
+      return list.map((item, idx) => ({
+        ...item,
+        id: item.id ? `${item.id}_${idx}` : `c_${Date.now()}_${idx}`,
+        attended: false
+      }));
+    }
+
+    function migrateOrNormalize(raw) {
       if (!raw) return EMPTY_TEMPLATE;
-      const goalsByWeek = { ...(raw.goalsByWeek || {}) };
-      if (raw.goals && !goalsByWeek[currentWeekKey]) {
-        const hasLegacyGoals = Object.values(raw.goals).some(arr => Array.isArray(arr) && arr.length > 0);
-        if (hasLegacyGoals) {
-          goalsByWeek[currentWeekKey] = raw.goals;
-        }
+      const baseTemplate = raw.baseTemplate || raw.classes || { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] };
+      const daysData = { ...(raw.daysData || {}) };
+
+      const currMonday = getMonday(0);
+      if (raw.goals) {
+        DAYS.forEach(d => {
+          const dt = new Date(currMonday);
+          dt.setDate(currMonday.getDate() + d.offset);
+          const dk = formatDateKey(dt);
+          if (!daysData[dk] && Array.isArray(raw.goals[d.id]) && raw.goals[d.id].length > 0) {
+            daysData[dk] = {
+              classes: cloneBaseClasses(baseTemplate[d.id] || []),
+              goals: raw.goals[d.id]
+            };
+          }
+        });
       }
+
       return {
         profileTitle: raw.profileTitle || "Моё расписание",
-        classes: raw.classes || EMPTY_DAYS,
-        goalsByWeek,
-        attendanceByWeek: raw.attendanceByWeek || {}
+        baseTemplate,
+        daysData,
+        updatedAt: raw.updatedAt || Date.now()
       };
     }
 
     function App() {
       const [weekOffset, setWeekOffset] = useState(0);
-      const monday = useMemo(() => getMonday(weekOffset), [weekOffset]);
-      const weekKey = useMemo(() => formatWeekKey(monday), [monday]);
-
-      const [user, setUser] = useState(null);
-      const [syncState, setSyncState] = useState("local");
-      const [data, setData] = useState(() => {
-        const saved = localStorage.getItem("studypulse_guest_v1");
-        const initialWeekKey = formatWeekKey(getMonday(0));
-        return saved ? normalizeData(JSON.parse(saved), initialWeekKey) : EMPTY_TEMPLATE;
-      });
-
       const [activeDay, setActiveDay] = useState(() => {
         const d = new Date().getDay();
         return DAYS[d === 0 ? 6 : d - 1].id;
       });
 
+      const [user, setUser] = useState(null);
+      const [syncState, setSyncState] = useState("local");
+
+      const [data, setData] = useState(() => {
+        try {
+          const saved = localStorage.getItem(STORAGE_KEY) || localStorage.getItem("studypulse_guest_v1");
+          return saved ? migrateOrNormalize(JSON.parse(saved)) : EMPTY_TEMPLATE;
+        } catch {
+          return EMPTY_TEMPLATE;
+        }
+      });
+
+      const dataRef = useRef(data);
+      useEffect(() => {
+        dataRef.current = data;
+      }, [data]);
+
       const [newGoalText, setNewGoalText] = useState("");
       const [newGoalPriority, setNewGoalPriority] = useState("high");
       const [showClassModal, setShowClassModal] = useState(false);
+      const [applyToTemplate, setApplyToTemplate] = useState(false);
       const [classForm, setClassForm] = useState({
         time: TIME_SLOTS[0], title: "", room: "", teacher: "", type: "lecture"
       });
@@ -146,13 +172,18 @@
               try {
                 const ref = fb.doc(fb.db, "users", currentUser.uid);
                 const snap = await fb.getDoc(ref);
-                const currentWk = formatWeekKey(getMonday(0));
+                const localCurrent = dataRef.current;
+
                 if (snap.exists()) {
-                  const normalized = normalizeData(snap.data(), currentWk);
-                  setData(normalized);
-                  localStorage.setItem("studypulse_guest_v1", JSON.stringify(normalized));
+                  const cloudData = migrateOrNormalize(snap.data());
+                  if ((cloudData.updatedAt || 0) >= (localCurrent.updatedAt || 0)) {
+                    setData(cloudData);
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(cloudData));
+                  } else {
+                    await fb.setDoc(ref, localCurrent);
+                  }
                 } else {
-                  await fb.setDoc(ref, data);
+                  await fb.setDoc(ref, localCurrent);
                 }
                 setSyncState("synced");
               } catch (e) {
@@ -169,9 +200,12 @@
         else window.addEventListener("firebase-ready", initAuth);
       }, []);
 
-      const persistData = async (nextData) => {
+      const persistData = async (nextDataRaw) => {
+        const nextData = { ...nextDataRaw, updatedAt: Date.now() };
+        dataRef.current = nextData;
         setData(nextData);
-        localStorage.setItem("studypulse_guest_v1", JSON.stringify(nextData));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(nextData));
+
         const fb = window.firebaseServices;
         if (user && fb && fb.isConfigured) {
           setSyncState("syncing");
@@ -185,6 +219,125 @@
         }
       };
 
+      const monday = useMemo(() => getMonday(weekOffset), [weekOffset]);
+
+      const daysWithDates = useMemo(() => {
+        const todayStr = new Date().toDateString();
+        return DAYS.map(d => {
+          const dateObj = new Date(monday);
+          dateObj.setDate(monday.getDate() + d.offset);
+          const dateKey = formatDateKey(dateObj);
+          const dateLabel = dateObj.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+          return { ...d, dateKey, dateLabel, isToday: dateObj.toDateString() === todayStr };
+        });
+      }, [monday]);
+
+      const getDayRecord = (dayId, dateKey) => {
+        const existing = data.daysData?.[dateKey];
+        if (existing) {
+          return {
+            classes: existing.classes || [],
+            goals: existing.goals || []
+          };
+        }
+        return {
+          classes: cloneBaseClasses(data.baseTemplate?.[dayId] || []),
+          goals: []
+        };
+      };
+
+      const activeDayObj = daysWithDates.find(d => d.id === activeDay) || daysWithDates[0];
+      const activeDateKey = activeDayObj.dateKey;
+      const activeRecord = getDayRecord(activeDay, activeDateKey);
+      const dayClasses = activeRecord.classes;
+      const dayGoals = activeRecord.goals;
+
+      const stats = useMemo(() => {
+        let streak = 0;
+        const perDay = daysWithDates.map(d => {
+          const rec = getDayRecord(d.id, d.dateKey);
+          const cls = rec.classes;
+          const gls = rec.goals;
+          const doneCls = cls.filter(c => !!c.attended).length;
+          const doneGls = gls.filter(g => !!g.done).length;
+          const total = cls.length + gls.length;
+          const score = total > 0 ? Math.round(((doneCls + doneGls) / total) * 100) : 0;
+          if (score >= 60) streak++;
+          return { ...d, score, clsCount: cls.length, doneCls, glsCount: gls.length, doneGls };
+        });
+        return { streak, perDay };
+      }, [data, daysWithDates]);
+
+      const updateActiveDateRecord = (nextClasses, nextGoals, nextBaseTemplate = data.baseTemplate) => {
+        const nextDaysData = {
+          ...(data.daysData || {}),
+          [activeDateKey]: {
+            classes: nextClasses,
+            goals: nextGoals
+          }
+        };
+        persistData({
+          ...data,
+          baseTemplate: nextBaseTemplate,
+          daysData: nextDaysData
+        });
+      };
+
+      const toggleClassAttended = (classId) => {
+        const nextClasses = dayClasses.map(c =>
+          c.id === classId ? { ...c, attended: !c.attended } : c
+        );
+        updateActiveDateRecord(nextClasses, dayGoals);
+      };
+
+      const deleteClass = (classId) => {
+        const nextClasses = dayClasses.filter(c => c.id !== classId);
+        updateActiveDateRecord(nextClasses, dayGoals);
+      };
+
+      const addClass = (e) => {
+        e.preventDefault();
+        if (!classForm.title.trim()) return;
+        const nextItem = { id: "c_" + Date.now(), ...classForm, attended: false };
+        const nextClasses = [...dayClasses, nextItem];
+
+        let nextTemplate = data.baseTemplate;
+        if (applyToTemplate) {
+          const tmplList = [...(data.baseTemplate?.[activeDay] || []), { ...nextItem, attended: false }];
+          nextTemplate = { ...data.baseTemplate, [activeDay]: tmplList };
+        }
+
+        updateActiveDateRecord(nextClasses, dayGoals, nextTemplate);
+        setShowClassModal(false);
+        setClassForm({ time: TIME_SLOTS[0], title: "", room: "", teacher: "", type: "lecture" });
+      };
+
+      const addGoal = (e) => {
+        e.preventDefault();
+        if (!newGoalText.trim()) return;
+        const nextGoal = {
+          id: "g_" + Date.now(),
+          text: newGoalText.trim(),
+          priority: newGoalPriority,
+          done: false
+        };
+        const nextGoals = [...dayGoals, nextGoal];
+        updateActiveDateRecord(dayClasses, nextGoals);
+        setNewGoalText("");
+      };
+
+      const toggleGoal = (goalId) => {
+        const nextGoals = dayGoals.map(g =>
+          g.id === goalId ? { ...g, done: !g.done } : g
+        );
+        updateActiveDateRecord(dayClasses, nextGoals);
+      };
+
+      const deleteGoal = (goalId) => {
+        const nextGoals = dayGoals.filter(g => g.id !== goalId);
+        updateActiveDateRecord(dayClasses, nextGoals);
+      };
+
       const handleGoogleLogin = async () => {
         const fb = window.firebaseServices;
         await fb.signInWithPopup(fb.auth, fb.provider);
@@ -193,96 +346,6 @@
       const handleLogout = async () => {
         const fb = window.firebaseServices;
         if (fb?.isConfigured) await fb.signOut(fb.auth);
-      };
-
-      const daysWithDates = useMemo(() => {
-        const todayStr = new Date().toDateString();
-        return DAYS.map(d => {
-          const dateObj = new Date(monday);
-          dateObj.setDate(monday.getDate() + d.offset);
-          const dateLabel = dateObj.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
-          return { ...d, dateLabel, isToday: dateObj.toDateString() === todayStr };
-        });
-      }, [monday]);
-
-      const weekGoalsObj = data.goalsByWeek?.[weekKey] || EMPTY_DAYS;
-      const weekAttendanceObj = data.attendanceByWeek?.[weekKey] || {};
-
-      const isClassAttended = (dayId, classId) => {
-        return !!weekAttendanceObj[dayId]?.[classId];
-      };
-
-      const stats = useMemo(() => {
-        let streak = 0;
-        const perDay = DAYS.map(d => {
-          const cls = data.classes?.[d.id] || [];
-          const gls = weekGoalsObj[d.id] || [];
-          const doneCls = cls.filter(c => !!weekAttendanceObj[d.id]?.[c.id]).length;
-          const doneGls = gls.filter(g => g.done).length;
-          const total = cls.length + gls.length;
-          const score = total > 0 ? Math.round(((doneCls + doneGls) / total) * 100) : 0;
-          if (score >= 60) streak++;
-          return { ...d, score, clsCount: cls.length, doneCls, glsCount: gls.length, doneGls };
-        });
-        return { streak, perDay };
-      }, [data, weekGoalsObj, weekAttendanceObj]);
-
-      const toggleClassAttended = (classId) => {
-        const currentDayAtt = weekAttendanceObj[activeDay] || {};
-        const nextDayAtt = { ...currentDayAtt, [classId]: !currentDayAtt[classId] };
-        const nextWeekAtt = { ...weekAttendanceObj, [activeDay]: nextDayAtt };
-        persistData({
-          ...data,
-          attendanceByWeek: { ...(data.attendanceByWeek || {}), [weekKey]: nextWeekAtt }
-        });
-      };
-
-      const deleteClass = (id) => {
-        const list = (data.classes[activeDay] || []).filter(c => c.id !== id);
-        persistData({ ...data, classes: { ...data.classes, [activeDay]: list } });
-      };
-
-      const addClass = (e) => {
-        e.preventDefault();
-        if (!classForm.title.trim()) return;
-        const nextItem = { id: "c_" + Date.now(), ...classForm };
-        const list = [...(data.classes[activeDay] || []), nextItem];
-        persistData({ ...data, classes: { ...data.classes, [activeDay]: list } });
-        setShowClassModal(false);
-        setClassForm({ time: TIME_SLOTS[0], title: "", room: "", teacher: "", type: "lecture" });
-      };
-
-      const addGoal = (e) => {
-        e.preventDefault();
-        if (!newGoalText.trim()) return;
-        const nextGoal = { id: "g_" + Date.now(), text: newGoalText.trim(), priority: newGoalPriority, done: false };
-        const currentList = weekGoalsObj[activeDay] || [];
-        const nextWeekGoals = { ...weekGoalsObj, [activeDay]: [...currentList, nextGoal] };
-        persistData({
-          ...data,
-          goalsByWeek: { ...(data.goalsByWeek || {}), [weekKey]: nextWeekGoals }
-        });
-        setNewGoalText("");
-      };
-
-      const toggleGoal = (id) => {
-        const currentList = weekGoalsObj[activeDay] || [];
-        const nextList = currentList.map(g => g.id === id ? { ...g, done: !g.done } : g);
-        const nextWeekGoals = { ...weekGoalsObj, [activeDay]: nextList };
-        persistData({
-          ...data,
-          goalsByWeek: { ...(data.goalsByWeek || {}), [weekKey]: nextWeekGoals }
-        });
-      };
-
-      const deleteGoal = (id) => {
-        const currentList = weekGoalsObj[activeDay] || [];
-        const nextList = currentList.filter(g => g.id !== id);
-        const nextWeekGoals = { ...weekGoalsObj, [activeDay]: nextList };
-        persistData({
-          ...data,
-          goalsByWeek: { ...(data.goalsByWeek || {}), [weekKey]: nextWeekGoals }
-        });
       };
 
       const exportJSON = () => {
@@ -301,21 +364,19 @@
         reader.onload = (ev) => {
           try {
             const parsed = JSON.parse(ev.target.result);
-            if (parsed.classes) {
-              persistData(normalizeData(parsed, weekKey));
+            if (parsed.classes || parsed.baseTemplate || parsed.daysData) {
+              const normalized = migrateOrNormalize(parsed);
+              persistData(normalized);
             } else {
-              alert("Некорректный формат файла расписания");
+              alert("Некорректный формат JSON-файла");
             }
           } catch {
             alert("Ошибка чтения JSON-файла");
           }
         };
         reader.readAsText(file);
+        e.target.value = "";
       };
-
-      const activeDayObj = daysWithDates.find(d => d.id === activeDay);
-      const dayClasses = data.classes?.[activeDay] || [];
-      const dayGoals = weekGoalsObj[activeDay] || [];
 
       return (
         <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
@@ -328,10 +389,10 @@
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-1">
-                {syncState === "synced" && "☁️ Синхронизировано с твоим Google-аккаунтом"}
-                {syncState === "syncing" && "⏳ Сохранение в облако..."}
-                {syncState === "local" && "💾 Гостевой режим (хранится только в этом браузере)"}
-                {syncState === "error" && "⚠️ Ошибка синхронизации с Firestore"}
+                {syncState === "synced" && "☁️ Сохранено в облаке и в памяти устройства"}
+                {syncState === "syncing" && "⏳ Синхронизация..."}
+                {syncState === "local" && "💾 Сохранено локально в этом браузере"}
+                {syncState === "error" && "⚠️ Ошибка облака (сохранено локально в браузере)"}
               </p>
             </div>
 
@@ -369,7 +430,7 @@
                 <button onClick={() => setWeekOffset(w => w + 1)} className="px-2.5 py-1 bg-slate-900 border border-slate-800 rounded-lg text-sm hover:bg-slate-800">→</button>
               </div>
               <span className="text-xs text-slate-400">
-                Неделя: {daysWithDates[0].dateLabel} — {daysWithDates[6].dateLabel}
+                {daysWithDates[0].dateLabel} — {daysWithDates[6].dateLabel}
               </span>
             </div>
 
@@ -379,7 +440,7 @@
                 const isSelected = d.id === activeDay;
                 return (
                   <button
-                    key={d.id}
+                    key={d.dateKey}
                     onClick={() => setActiveDay(d.id)}
                     className={`p-2.5 rounded-2xl border text-left transition flex flex-col justify-between ${
                       isSelected
@@ -406,10 +467,10 @@
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-lg font-bold text-white">
-                    {activeDayObj?.name}, {activeDayObj?.dateLabel}
+                    {activeDayObj.name}, {activeDayObj.dateLabel}
                   </h2>
                   <p className="text-xs text-slate-400">
-                    Посещено на этой неделе: {dayClasses.filter(c => isClassAttended(activeDay, c.id)).length} из {dayClasses.length}
+                    Посещено {activeDayObj.dateLabel}: {dayClasses.filter(c => c.attended).length} из {dayClasses.length}
                   </p>
                 </div>
                 <button
@@ -422,24 +483,23 @@
 
               {dayClasses.length === 0 ? (
                 <div className="text-center py-10 border border-dashed border-slate-800 rounded-xl text-slate-400 text-sm">
-                  В этот день аудиторных пар нет — время для бота или отдыха.
+                  На {activeDayObj.dateLabel} аудиторных пар нет.
                 </div>
               ) : (
                 <div className="space-y-2.5">
                   {dayClasses.map(item => {
                     const badge = TYPE_BADGES[item.type] || TYPE_BADGES.lecture;
-                    const attended = isClassAttended(activeDay, item.id);
                     return (
                       <div
                         key={item.id}
                         className={`p-3.5 rounded-xl border transition flex items-start justify-between gap-3 ${
-                          attended ? "bg-slate-900/40 border-slate-800/60 opacity-65" : "bg-slate-950/60 border-slate-800"
+                          item.attended ? "bg-slate-900/40 border-slate-800/60 opacity-65" : "bg-slate-950/60 border-slate-800"
                         }`}
                       >
                         <div className="flex items-start gap-3">
                           <input
                             type="checkbox"
-                            checked={attended}
+                            checked={!!item.attended}
                             onChange={() => toggleClassAttended(item.id)}
                             className="mt-1 w-4 h-4 accent-indigo-500 rounded cursor-pointer"
                           />
@@ -449,7 +509,7 @@
                               <span className={`text-[11px] px-2 py-0.5 rounded-md border ${badge.cls}`}>{badge.label}</span>
                               {item.room && <span className="text-xs text-slate-400">📍 {item.room}</span>}
                             </div>
-                            <div className={`font-semibold text-sm mt-1 ${attended ? "line-through text-slate-400" : "text-slate-100"}`}>
+                            <div className={`font-semibold text-sm mt-1 ${item.attended ? "line-through text-slate-400" : "text-slate-100"}`}>
                               {item.title}
                             </div>
                             {item.teacher && <div className="text-xs text-slate-400 mt-0.5">👤 {item.teacher}</div>}
@@ -465,7 +525,7 @@
 
             <div className="lg:col-span-5 bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-4">
               <div>
-                <h2 className="text-lg font-bold text-white">Цели на {activeDayObj?.dateLabel}</h2>
+                <h2 className="text-lg font-bold text-white">Цели на {activeDayObj.dateLabel}</h2>
                 <p className="text-xs text-slate-400">
                   Выполнено: {dayGoals.filter(g => g.done).length} из {dayGoals.length}
                 </p>
@@ -476,7 +536,7 @@
                   type="text"
                   value={newGoalText}
                   onChange={e => setNewGoalText(e.target.value)}
-                  placeholder="Добавить задачу на этот день..."
+                  placeholder={`Задача на ${activeDayObj.dateLabel}...`}
                   className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
                 />
                 <select
@@ -495,7 +555,7 @@
 
               <div className="space-y-2">
                 {dayGoals.length === 0 ? (
-                  <p className="text-xs text-slate-500 text-center py-6">Список задач на {activeDayObj?.dateLabel} пуст.</p>
+                  <p className="text-xs text-slate-500 text-center py-6">На {activeDayObj.dateLabel} задач пока нет.</p>
                 ) : (
                   dayGoals.map(g => (
                     <div key={g.id} className="flex items-center justify-between gap-2 p-3 rounded-xl bg-slate-950/60 border border-slate-800">
@@ -527,7 +587,7 @@
             </h3>
             <div className="grid grid-cols-7 gap-3 items-end h-36 pt-4 px-2">
               {stats.perDay.map((d, idx) => (
-                <div key={d.id} className="flex flex-col items-center h-full justify-end gap-1.5">
+                <div key={d.dateKey} className="flex flex-col items-center h-full justify-end gap-1.5">
                   <span className="text-[11px] font-mono text-slate-400">{d.score}%</span>
                   <div className="w-full max-w-[42px] bg-slate-800/80 rounded-t-lg h-24 flex items-end overflow-hidden">
                     <div
@@ -546,7 +606,7 @@
           {showClassModal && (
             <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
               <form onSubmit={addClass} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 w-full max-w-md space-y-3">
-                <h3 className="font-bold text-white">Добавить занятие</h3>
+                <h3 className="font-bold text-white">Добавить занятие ({activeDayObj.dateLabel})</h3>
                 <select
                   value={classForm.time}
                   onChange={e => setClassForm({ ...classForm, time: e.target.value })}
@@ -588,6 +648,15 @@
                   onChange={e => setClassForm({ ...classForm, teacher: e.target.value })}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm"
                 />
+                <label className="flex items-center gap-2 text-xs text-slate-300 pt-1 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={applyToTemplate}
+                    onChange={e => setApplyToTemplate(e.target.checked)}
+                    className="accent-indigo-500 rounded"
+                  />
+                  Также повторять каждую неделю в этот день
+                </label>
                 <div className="flex justify-end gap-2 pt-2">
                   <button type="button" onClick={() => setShowClassModal(false)} className="px-4 py-2 text-xs text-slate-400">Отмена</button>
                   <button type="submit" className="px-4 py-2 text-xs bg-indigo-600 text-white rounded-xl font-medium">Сохранить</button>
